@@ -1,0 +1,238 @@
+; Timesheet stuff from Matt Kaufmann
+
+; All writing is done to the file ~/accomplishments.txt.
+;
+; ctl-t -
+;   Start recording time
+; ctl-t +
+;   Stop recording time
+; ctl-t =
+;   Sum the times this day (or other period) into a daily total
+; ctl-t :
+;   Sum the times this week (or other period) into a weekly total
+;
+; The reason I say "or other period" is that what actually happens is
+; that ctl-t = lays down something like this
+;
+; @TOTAL@ 08:05:10
+;
+; and ctl-t : lays down something like this
+;
+; <| Total for week:  38:30:30 |>
+;
+; and the first of those (for "@TOTAL@") sums times like "[00:25:37]@"
+; since the preceding "@TOTAL@", and the second of these sums times like
+; "<| Total for week: xxx |>" since the preceding one of those.
+
+; There's also ctl-t ) , which lays down a time without the "]@"
+; needed in order to contribute to the daily sum.
+
+;;; Keymap stuff is from /projects/acl2/acl2/emacs/emacs-acl2.el
+
+(defvar ctl-t-keymap)
+
+(when (not (boundp 'ctl-t-keymap))
+
+; Warning: Keep this in sync with the introduction of ctl-t-keymap in
+; acl2-doc.el.
+
+; This trick probably came from Bob Boyer, to define a new keymap; so now
+; control-t is the first character of a complex command.
+  (setq ctl-t-keymap (make-sparse-keymap))
+  (define-key (current-global-map) "\C-T" ctl-t-keymap)
+
+; Control-t t now transposes characters, instead of the former control-t.
+  (define-key ctl-t-keymap "\C-T" 'transpose-chars)
+  (define-key ctl-t-keymap "\C-t" 'transpose-chars)
+  )
+
+; From Bishop Brock:
+(defun date ()
+  "Inserts the date and time at point."
+  (interactive)
+  (insert (current-time-string)))
+
+(defvar *acc* "~/accomplishments.txt")
+
+(defun get-acc ()
+  (interactive)
+  (find-file *acc*))
+
+(defun get-acc-inside ()
+  (interactive)
+  (setq *acc* "~/accomplishments.txt")
+  (get-acc))
+
+(defun get-acc-outside ()
+  (interactive)
+;  (setq *acc* "~/outside-employment-2007-08.txt")
+  (setq *acc* "~/matt/exercise.txt")
+;  (setq *acc* "~/projects/fh/time-govt.txt")
+;  (setq *acc* "~/projects/fh/time-centaur.txt")
+  (get-acc))
+
+(defun time-to-secs (str pos)
+  "Position pos of str should be the start of hh:mm:ss"
+  (let ((hrs (substring str pos (+ pos 2)))
+	(mns (substring str (+ pos 3) (+ pos 5)))
+	(scs (substring str (+ pos 6) (+ pos 8))))
+    (+ (* 3600 (car (read-from-string hrs)))
+       (* 60  (car (read-from-string mns)))
+       (car (read-from-string scs)))))
+
+(defun secs-to-time-string (total-secs)
+  (let* ((hrs (/ total-secs 3600))
+	 (mns (- (/ total-secs 60) (* 60 hrs)))
+	 (scs (- total-secs (+ (* 3600 hrs) (* 60 mns)))))
+    (format "%02d:%02d:%02d" hrs mns scs)))
+
+(defun timesheet-insert-start ()
+  (interactive)
+  (command-execute 'get-acc)
+  (end-of-buffer)
+  (date)
+  (insert "@@")
+  (newline))
+
+(defun timesheet-insert-stop (arg)
+; Matt K. mod: if arg is supplied, then insert " SAT" after "]@".
+; (If the work could be considered other than SAT, manually add ?, to get SAT?.)
+  "Prints the date on the last line, followed by the elapsed time [hh:mm:ss]@."
+  (interactive "P")
+  (command-execute 'get-acc)
+  (let ((old (progn (end-of-buffer)
+		    (search-backward "@@")
+		    (beginning-of-line)
+		    (let* ((beg (progn (beginning-of-line) (point)))
+			   (end (progn (end-of-line) (point)))
+			   (str (buffer-substring beg end)))
+		      (time-to-secs str 11)))))
+    (end-of-buffer)
+    (date)
+    (let ((new (time-to-secs (buffer-substring (- (point) 13) (point)) 0)))
+      (insert (format " [%s]@" (secs-to-time-string (- new old))))
+      (if arg
+	  (insert " SAT"))
+      (newline))))
+
+(defun timesheet-previous-total ()
+  (command-execute 'get-acc)
+  (save-excursion
+    (end-of-buffer)
+    (search-backward "@TOTAL@ ")
+    (next-line 1)
+    (let ((secs 0))
+      (while (search-forward "]@" nil t)
+	(setq secs
+	      (+ secs
+		 (time-to-secs (buffer-substring (- (point) 10) (point)) 0))))
+      secs)))
+
+(defun timesheet-check ()
+  (command-execute 'get-acc)
+  (save-excursion
+    (end-of-buffer)
+    (search-backward "@TOTAL@ ")
+    (beginning-of-line)
+    (next-line 1)
+    (let ((parity
+	   ;; nil expects next to be start; else expect end
+	   nil))
+      (while (not (eobp))
+	(beginning-of-line)
+	(let* ((beg (point))
+	       (end (progn (end-of-line) (point))))
+	  (goto-char beg)
+	  (if (search-forward "]@" end t)
+	      (cond (parity (setq parity nil))
+		    ;; ((looking-at "@"))	; no beginning
+		    (t (error
+			"Line %d: Unexpected timesheet stop (two in a row?)"
+			(count-lines 1 (point))))))
+	  (if (search-forward "@@" end t)
+	      (if (not parity)
+		  (setq parity t)
+		(error "Line %d: Unexpected timesheet start (two in a row?)"
+		       (count-lines 1 (point))))))
+	(next-line 1))
+      (if parity
+	  (error "Last timesheet start did not have subsequent end.")))))
+
+(defun timesheet-insert-total ()
+  (interactive)
+  (command-execute 'get-acc)
+  (timesheet-check)
+  (let ((total (timesheet-previous-total)))
+    (end-of-buffer)
+    (insert (format "@TOTAL@ %s" (secs-to-time-string total)))
+    (newline)))
+
+(defun timesheet-weekly-total ()
+  (interactive)
+  (command-execute 'get-acc)
+  (end-of-buffer)
+  (let ((str (if (equal *acc* "~/accomplishments.txt")
+		 "<| Total for week"
+	       "<| Total for contract period")))
+    (search-backward str)
+    (let ((secs 0))
+      (while (search-forward "@TOTAL@ " nil t)
+	(setq secs
+	      (+ secs
+		 (time-to-secs (buffer-substring (point) (+ (point) 8))
+			       0))))
+      (end-of-buffer)
+      (insert (format "%s:  %s |>" str (secs-to-time-string secs)))
+      (newline))))
+
+(defun timesheet-insert-stop-home ()
+  (interactive)
+  (timesheet-insert-stop nil)
+  (save-excursion
+    (search-backward "]@")
+    (delete-char 2)
+    (insert " at home not counted}}")
+    (search-backward "[")
+    (delete-char 1)
+    (insert "{{")
+    (search-backward "@@")
+    (delete-char 2)))
+
+(define-key ctl-t-keymap "-" 'timesheet-insert-start)
+(define-key ctl-t-keymap "+" 'timesheet-insert-stop)
+(define-key ctl-t-keymap ")" 'timesheet-insert-stop-home)
+(define-key ctl-t-keymap "=" 'timesheet-insert-total)
+(define-key ctl-t-keymap ":" 'timesheet-weekly-total)
+
+; Finally, a function not used above that's useful for adding times together
+; for a list with elements of the form (hh mm ss).  Consider using
+; (insert (sum-time-trips '( ... ))).
+
+(defun sum-time-trips (lst)
+  (let (trip
+	(secs 0))
+    (while lst
+      (setq trip (car lst))
+      (setq secs (+ secs
+		    (* 3600 (car trip))
+		    (* 60 (cadr trip))
+		    (car (cddr trip))))
+      (setq lst (cdr lst)))
+    (secs-to-time-string secs)))
+
+; Here's one that sums all end-entries (like "[hh:mm:ss]@") from point
+; and inserts the result at the end of the buffer (after some whitespace).
+
+(defun sum-time-end-entries ()
+  (interactive)
+  (let ((secs 0))
+    (while (search-forward "]@" nil t)
+      (setq secs
+	    (+ secs
+	       (time-to-secs (buffer-substring (- (point) 10) (point)) 0))))
+    (goto-char (point-max))
+    (insert (format "\n%s\n" (secs-to-time-string secs)))))
+
+(define-key ctl-t-keymap ";" 'sum-time-end-entries)
+
+; End of Timesheet stuff.
